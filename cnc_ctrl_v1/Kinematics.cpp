@@ -69,6 +69,21 @@ void  Kinematics::inverse(float xTarget,float yTarget, float* aChainLength, floa
     
     */
     
+    //Confirm that the coordinates are on the wood
+    _verifyValidTarget(&xTarget, &yTarget);
+    
+    _inverse(xTarget,yTarget,aChainLength,bChainLength);
+    
+}
+
+void  Kinematics::_inverse(float xTarget,float yTarget, float* aChainLength, float* bChainLength){
+    /*
+    
+    This function works as a switch to call either the quadrilateralInverse kinematic function 
+    or the triangularInverse kinematic function
+    
+    */
+    
     if(sysSettings.kinematicsType == 1){
         quadrilateralInverse(xTarget, yTarget, aChainLength, bChainLength);
     }
@@ -231,13 +246,37 @@ void  Kinematics::triangularInverse(float xTarget,float yTarget, float* aChainLe
     float Chain1Straight = sqrt(pow(Motor1Distance,2)-pow(R,2));
     float Chain2Straight = sqrt(pow(Motor2Distance,2)-pow(R,2));
 
-    //Correct the straight chain lengths to account for chain sag
-    Chain1Straight *= (1 + ((sysSettings.chainSagCorrection / 1000000000000) * pow(cos(Chain1Angle),2) * pow(Chain1Straight,2) * pow((tan(Chain2Angle) * cos(Chain1Angle)) + sin(Chain1Angle),2)));
-    Chain2Straight *= (1 + ((sysSettings.chainSagCorrection / 1000000000000) * pow(cos(Chain2Angle),2) * pow(Chain2Straight,2) * pow((tan(Chain1Angle) * cos(Chain2Angle)) + sin(Chain2Angle),2)));
+    //Calculate total weight held by both sprockets (but only half of chains weight?) Check with Joshua...
+    float totalWeight=sledWeight+0.5*chainDensity*(Chain1Straight+Chain2Straight); // Newtons
 
-    //Calculate total chain lengths accounting for sprocket geometry and chain sag
-    float Chain1 = Chain1AroundSprocket + Chain1Straight / (1.0f + sysSettings.leftChainTolerance / 100.0f);
-    float Chain2 = Chain2AroundSprocket + Chain2Straight / (1.0f + sysSettings.rightChainTolerance / 100.0f);
+    //    TensionDenominator= d(x_l       y_r-      x_r       y_l-      x_l      y_t     +x_t    y_l      +x_r       y_t    -x_t     y_r)
+    float TensionDenominator= (xTangent1*yTangent2-xTangent2*yTangent1-xTangent1*yTarget+xTarget*yTangent1+xTangent2*yTarget-xTarget*yTangent2);
+    
+    //      T_l     = -(w         *sqrt(pow(x_l      -x_t    ,2.0)+pow(y_l      -y_t    ,2.0)) (x_r      -x_t))    /TensionDenominator
+    float Tension1 = - (totalWeight*sqrt(pow(xTangent1-xTarget,2.0)+pow(yTangent1-yTarget,2.0))*(xTangent2-xTarget))/TensionDenominator;
+
+    //     T_r     = (w         *sqrt(pow(x_r      -x_t    ,2.0)+pow(y_r      -y_t    ,2.0)) (x_l      -x_t))/(x_ly_r-x_ry_l-x_ly_t+x_ty_l+x_ry_t-x_ty_r)
+    float Tension2 = (totalWeight*sqrt(pow(xTangent2-xTarget,2.0)+pow(yTangent2-yTarget,2.0))*(xTangent1-xTarget))/TensionDenominator;
+    
+    float HorizontalTension=Tension1*(xTarget-xTangent1)/Chain1Straight;
+    
+    //Calculation of horizontal component of tension for two chains should be equal, as validation step
+    //HorizontalTension1=Tension1*(xTarget-xTangent1)/Chain1Straight;
+    //HorizontalTension2=Tension2*(xTangent2-xTarget)/Chain2Straight;
+
+    //Calculation of vertical force due to tension, to validate tension calculation
+    //VerticalForce=Tension1*(yTangent1-yTarget)/Chain1Straight+Tension2*(yTangent2-yTarget)/Chain2Straight;
+
+    float a1=HorizontalTension/chainDensity;
+    float a2=HorizontalTension/chainDensity;
+    
+    //Catenary Equation, total chain length excluding sprocket geometry, chain tolerance, and chain elasticity
+    float Chain1=sqrt(pow(2*a1*sinh((xTarget-xTangent1)/(2*a1)),2)+pow(yTangent1-yTarget,2));
+    float Chain2=sqrt(pow(2*a2*sinh((xTangent2-xTarget)/(2*a2)),2)+pow(yTangent2-yTarget,2));
+    
+    //Calculate total chain lengths accounting for sprocket geometry, chain tolerance, and chain elasticity
+    Chain1=Chain1AroundSprocket + Chain1/(1.0f+sysSettings.leftChainTolerance/100.0f)/(1.0f+Tension1*chainElasticity);
+    Chain2=Chain2AroundSprocket + Chain2/(1.0f+sysSettings.rightChainTolerance/100.0f)/(1.0f+Tension2*chainElasticity);
 
     //Subtract of the virtual length which is added to the chain by the rotation mechanism
     Chain1 = Chain1 - sysSettings.rotationDiskRadius;
@@ -261,7 +300,7 @@ void  Kinematics::forward(const float& chainALength, const float& chainBLength, 
 
 
         //check our guess
-        inverse(xGuess, yGuess, &guessLengthA, &guessLengthB);
+        _inverse(xGuess, yGuess, &guessLengthA, &guessLengthB);
 
         float aChainError = chainALength - guessLengthA;
         float bChainError = chainBLength - guessLengthB;
@@ -293,7 +332,21 @@ void  Kinematics::forward(const float& chainALength, const float& chainBLength, 
                 Serial.print(chainALength);
                 Serial.print(", ");
                 Serial.print(chainBLength);
-                Serial.println(F(" . Please set the chains to a known length (Actions -> Set Chain Lengths)"));
+                if (guessCount>KINEMATICSMAXGUESS){
+                  Serial.println(F(" Number of guesses exceeds KINEMATICSMAXGUESS "));
+                }
+                else{
+                  if (guessLengthA>sysSettings.chainLength){
+                    Serial.print(F(" Left Chain Length Greater than System Settings Chain Length LeftChainLength: "));
+                    Serial.print(guessLengthA);
+                  }
+                  else{
+                    Serial.print(F(" Right Chain Length Greater than System Settings Chain Length LeftChainLength: "));
+                    Serial.print(guessLengthB);
+                  }
+                  Serial.print(F(" System Chain Length: "));
+                  Serial.println(sysSettings.chainLength);
+                }
                 *xPos = 0;
                 *yPos = 0;
             }

@@ -30,6 +30,7 @@
         public:
             Kinematics();
             void init  ();
+            void  _inverse   (float xTarget,float yTarget, float* aChainLength, float* bChainLength);
             void  inverse   (float xTarget,float yTarget, float* aChainLength, float* bChainLength);
             void  quadrilateralInverse   (float xTarget,float yTarget, float* aChainLength, float* bChainLength);
             void  triangularInverse   (float xTarget,float yTarget, float* aChainLength, float* bChainLength);
