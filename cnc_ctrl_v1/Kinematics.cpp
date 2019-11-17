@@ -85,15 +85,18 @@ void  Kinematics::_inverse(float xTarget,float yTarget, float* aChainLength, flo
     */
     
     if(sysSettings.kinematicsType == 1){
-        _quadrilateralInverse(xTarget, yTarget, aChainLength, bChainLength);
+        quadrilateralInverse(xTarget, yTarget, aChainLength, bChainLength);
     }
     else{
-        _triangularInverse(xTarget, yTarget, aChainLength, bChainLength);
+        triangularInverse(xTarget, yTarget, aChainLength, bChainLength);
     }
     
 }
 
-void  Kinematics::_quadrilateralInverse(float xTarget,float yTarget, float* aChainLength, float* bChainLength){
+void  Kinematics::quadrilateralInverse(float xTarget,float yTarget, float* aChainLength, float* bChainLength){
+
+    //Confirm that the coordinates are on the wood
+    _verifyValidTarget(&xTarget, &yTarget);
 
     //coordinate shift to put (0,0) in the center of the plywood from the left sprocket
     y = (halfHeight) + sysSettings.motorOffsetY  - yTarget;
@@ -201,7 +204,7 @@ void  Kinematics::_quadrilateralInverse(float xTarget,float yTarget, float* aCha
 
 }
 
-void  Kinematics::_triangularInverse(float xTarget,float yTarget, float* aChainLength, float* bChainLength){
+void  Kinematics::triangularInverse(float xTarget,float yTarget, float* aChainLength, float* bChainLength){
     /*
     
     The inverse kinematics (relating an xy coordinate pair to the required chain lengths to hit that point)
@@ -209,35 +212,27 @@ void  Kinematics::_triangularInverse(float xTarget,float yTarget, float* aChainL
     meeting at a point.
     
     */
+    
+    //Confirm that the coordinates are on the wood
+    _verifyValidTarget(&xTarget, &yTarget);
 
     //Set up variables
     float Chain1Angle = 0;
     float Chain2Angle = 0;
     float Chain1AroundSprocket = 0;
     float Chain2AroundSprocket = 0;
-    float xTangent1 = 0;
-    float yTangent1 = 0;
-    float xTangent2 = 0;
-    float yTangent2 = 0;
 
     //Calculate motor axes length to the bit
-    float Motor1Distance = sqrt(pow((-1.0*_xCordOfMotor - xTarget),2)+pow((_yCordOfMotor - yTarget),2));
+    float Motor1Distance = sqrt(pow((-1*_xCordOfMotor - xTarget),2)+pow((_yCordOfMotor - yTarget),2));
     float Motor2Distance = sqrt(pow((_xCordOfMotor - xTarget),2)+pow((_yCordOfMotor - yTarget),2));
 
     //Calculate the chain angles from horizontal, based on if the chain connects to the sled from the top or bottom of the sprocket
-    //Calculate the sprockets tangent contact points location
     if(sysSettings.chainOverSprocket == 1){
         Chain1Angle = asin((_yCordOfMotor - yTarget)/Motor1Distance) + asin(R/Motor1Distance);
         Chain2Angle = asin((_yCordOfMotor - yTarget)/Motor2Distance) + asin(R/Motor2Distance);
 
         Chain1AroundSprocket = R * Chain1Angle;
         Chain2AroundSprocket = R * Chain2Angle;
-        
-        xTangent1=-1.0*_xCordOfMotor+R*sin(Chain1Angle);
-        yTangent1=_yCordOfMotor+R*cos(Chain1Angle);
-
-        xTangent2=_xCordOfMotor-R*sin(Chain2Angle);
-        yTangent2=_yCordOfMotor+R*cos(Chain2Angle);
     }
     else{
         Chain1Angle = asin((_yCordOfMotor - yTarget)/Motor1Distance) - asin(R/Motor1Distance);
@@ -245,18 +240,8 @@ void  Kinematics::_triangularInverse(float xTarget,float yTarget, float* aChainL
 
         Chain1AroundSprocket = R * (3.14159 - Chain1Angle);
         Chain2AroundSprocket = R * (3.14159 - Chain2Angle);
-        
-        xTangent1=-1.0*_xCordOfMotor-R*sin(Chain1Angle);
-        yTangent1=_yCordOfMotor-R*cos(Chain1Angle);
-
-        xTangent2=_xCordOfMotor+R*sin(Chain2Angle);
-        yTangent2=_yCordOfMotor-R*cos(Chain2Angle);
     }
-    // introducing chain density, sled weight, chain stretch (AKA elasticity or elongation factor)
-    float sledWeight = sysSettings.sledWeight; //Newtons
-    float chainDensity = 0.14*9.8/1000; // N/mm
-    float chainElasticity = sysSettings.chainElongationFactor; // mm/mm/Newton typically between 5x10E-6 and 8 x10E-6
-    
+
     //Calculate the straight chain length from the sprocket to the bit
     float Chain1Straight = sqrt(pow(Motor1Distance,2)-pow(R,2));
     float Chain2Straight = sqrt(pow(Motor2Distance,2)-pow(R,2));
