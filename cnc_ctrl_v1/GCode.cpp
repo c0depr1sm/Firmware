@@ -19,8 +19,9 @@ Copyright 2014-2017 Bar Smith*/
 // commands
 
 #include "Maslow.h"
+#include <EEPROM.h>
 
-RingBuffer incSerialBuffer;
+maslowRingBuffer incSerialBuffer;
 String readyCommandString = "";  //KRK why is this a global?
 String gcodeLine          = "";  //Our use of this is a bit sloppy, at times,
                                  //we pass references to this global and then
@@ -44,7 +45,24 @@ void readSerialCommands(){
     if (Serial.available() > 0) {
         while (Serial.available() > 0) {
             char c = Serial.read();
-            if (c == '!'){
+            if ((c == CMD_RESET) || (c == CMD_RESET2)){      // immediate soft reset
+                // stop the motors and save the position
+                sys.stop = true;
+                quickCommandFlag = true;
+                bit_false(sys.pause, PAUSE_FLAG_USER_PAUSE);
+                sys.writeStepsToEEPROM = true;
+                // report the command 
+                Serial.println(F("\n\nsoft reset commanded\n\n"));
+                // mimic the firmware reset response sequence so GC thinks we've just reset
+                Serial.print(F("\nPCB v1."));
+                Serial.print(getPCBVersion());
+                if (TLE5206 == true) { Serial.print(F(" TLE5206 ")); }
+                Serial.println(F(" Detected"));
+                Serial.println(F("Grbl v1.00"));  
+                Serial.println(F("ready"));
+                reportStatusMessage(STATUS_OK);
+            }
+            else if (c == '!'){
                 sys.stop = true;
                 quickCommandFlag = true;
                 bit_false(sys.pause, PAUSE_FLAG_USER_PAUSE);
@@ -148,7 +166,7 @@ byte  executeBcodeLine(const String& gcodeLine){
 
     if(gcodeLine.substring(0, 3) == "B04"){
         //set flag to ignore position error limit during the tests
-        sys.state = (sys.state | STATE_POS_ERR_IGNORE);
+        bit_true(sys.state,STATE_POS_ERR_IGNORE);
         //Test each of the axis
         maslowDelay(500);
         if(sys.stop){return STATUS_OK;}
@@ -166,7 +184,11 @@ byte  executeBcodeLine(const String& gcodeLine){
         rightAxis.set(rightAxis.read());
 
         //clear the flag, re-enable position error limit
-        sys.state = (sys.state & (!STATE_POS_ERR_IGNORE));
+        bit_false(sys.state,STATE_POS_ERR_IGNORE);
+      
+        //set flag to write current encoder steps to EEPROM
+        sys.writeStepsToEEPROM = true;
+      
         return STATUS_OK;
     }
 
@@ -184,6 +206,10 @@ byte  executeBcodeLine(const String& gcodeLine){
         Serial.print(F("Right: "));
         Serial.print(rightAxis.read());
         Serial.println(F("mm"));
+      
+        kinematics.forward(leftAxis.read(), rightAxis.read(), &sys.xPosition, &sys.yPosition, 0, 0);
+        //set flag to write current encoder steps to EEPROM
+        sys.writeStepsToEEPROM = true;
 
         return STATUS_OK;
     }
@@ -204,6 +230,9 @@ byte  executeBcodeLine(const String& gcodeLine){
 
         Serial.println(F("Message: The machine chains have been manually re-calibrated."));
 
+        //set flag to write current encoder steps to EEPROM
+        sys.writeStepsToEEPROM = true;
+      
         return STATUS_OK;
     }
 
@@ -251,7 +280,7 @@ byte  executeBcodeLine(const String& gcodeLine){
         double begin = millis();
 
         int i = 0;
-        sys.state = (sys.state | STATE_POS_ERR_IGNORE);
+        bit_true(sys.state,STATE_POS_ERR_IGNORE);
         while (millis() - begin < ms){
             if (gcodeLine.indexOf('L') != -1){
                 leftAxis.motorGearboxEncoder.motor.directWrite(speed);
@@ -264,7 +293,13 @@ byte  executeBcodeLine(const String& gcodeLine){
             execSystemRealtime();
             if (sys.stop){return STATUS_OK;}
         }
-        sys.state = (sys.state | (!STATE_POS_ERR_IGNORE));
+        if (gcodeLine.indexOf('L') != -1){
+            leftAxis.motorGearboxEncoder.motor.directWrite(0);
+        }
+        else{
+            rightAxis.motorGearboxEncoder.motor.directWrite(0);
+        }
+        bit_false(sys.state,STATE_POS_ERR_IGNORE);
         return STATUS_OK;
     }
 
@@ -333,7 +368,35 @@ byte  executeBcodeLine(const String& gcodeLine){
 
         return STATUS_OK;
     }
-    return STATUS_INVALID_STATEMENT;
+
+        // Use 'B99 ON' to set FAKE_SERVO mode on,
+        // 'B99' with no parameter, or any parameter other than 'ON' 
+        // turns FAKE_SERVO mode off.
+        // FAKE_SERVO mode causes the Firmware to mimic a servo,
+        // updating the encoder steps even if no servo is connected.
+        // Useful for testing on an arduino only (e.g. without motors).
+        // The status of FAKE_SERVO mode is stored in EEPROM[ 4095 ] 
+        // to persist between resets. That byte is set to 'FAKE_SERVO_PERMITTED' when FAKE_SERVO
+        // is on, '0' when off. settingsWipe(SETTINGS_RESTORE_ALL) clears the
+        // EEPROM to '0', sothat stores '0' at EEPROM[ 4095 ] as well.
+        if(gcodeLine.substring(0, 3) == "B99") {
+        int letterO = gcodeLine.indexOf('O');
+        int letterN = gcodeLine.indexOf('N');
+        if ((letterO != -1) && (letterN != -1)) {
+          EEPROM[ FAKE_SERVO ] = FAKE_SERVO_PERMITTED;
+          FAKE_SERVO_STATE = FAKE_SERVO_PERMITTED;
+        } else {
+          EEPROM[ FAKE_SERVO ] = 0;
+          FAKE_SERVO_STATE = 0;
+        }
+        if (FAKE_SERVO_STATE == FAKE_SERVO_PERMITTED) {
+          Serial.println(F("FAKE_SERVO on"));
+        } else {
+          Serial.println(F("FAKE_SERVO off"));
+        }
+        return(STATUS_OK);
+     }
+   return STATUS_INVALID_STATEMENT;
 }
 
 void  executeGcodeLine(const String& gcodeLine){
@@ -502,6 +565,9 @@ void  sanitizeCommandString(String& cmdString){
                 // End of '()' comment. Resume line allowed.
                 cmdString.remove(pos, 1);
                 if (line_flags & LINE_FLAG_COMMENT_PARENTHESES) { line_flags &= ~(LINE_FLAG_COMMENT_PARENTHESES); }
+            }
+           else {
+                cmdString.remove(pos, 1);
             }
         }
         else {
